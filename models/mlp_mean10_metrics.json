@@ -1,0 +1,28 @@
+{
+    "model": "MLPClassifier (sklearn)",
+    "dataset": "wdbc_mean10_encoded.csv",
+    "features": [
+        "radius_mean",
+        "texture_mean",
+        "perimeter_mean",
+        "area_mean",
+        "smoothness_mean",
+        "compactness_mean",
+        "concavity_mean",
+        "concave points_mean",
+        "symmetry_mean",
+        "fractal_dimension_mean"
+    ],
+    "metrics": {
+        "Accuracy": 0.9211,
+        "AUC (ROC)": 0.9878,
+        "Sensitivity (TPR)": 0.8571,
+        "Specificity (TNR)": 0.9583,
+        "False Positive Rate": 0.0417,
+        "False Negative Rate": 0.1429,
+        "TN": 69,
+        "FP": 3,
+        "FN": 6,
+        "TP": 36
+    }
+}
