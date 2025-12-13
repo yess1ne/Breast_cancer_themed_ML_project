@@ -3,6 +3,10 @@ import json
 import pickle
 import numpy as np
 from flask import Flask, render_template, request
+from io import BytesIO
+from flask import send_file
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
 
 app = Flask(__name__)
 
@@ -31,7 +35,6 @@ if not FEATURE_ORDER or not isinstance(FEATURE_ORDER, list):
 
 # -------------------------
 # UI helpers (placeholders + short descriptions)
-# (These are just example placeholders. They don’t affect the model.)
 # -------------------------
 PLACEHOLDERS = {
     "radius_mean": "e.g., 14.13",
@@ -59,6 +62,19 @@ DESCRIPTIONS = {
     "fractal_dimension_mean": "Boundary complexity.",
 }
 
+LABELS = {
+    "radius_mean": "Average size (radius)",
+    "texture_mean": "Texture variation",
+    "perimeter_mean": "Boundary length (perimeter)",
+    "area_mean": "Area (surface size)",
+    "smoothness_mean": "Smoothness",
+    "compactness_mean": "Compactness",
+    "concavity_mean": "Concavity",
+    "concave points_mean": "Concave points",
+    "symmetry_mean": "Symmetry",
+    "fractal_dimension_mean": "Boundary complexity (fractal dimension)",
+}
+
 # -------------------------
 # Routes
 # -------------------------
@@ -72,6 +88,7 @@ def mb_form():
     return render_template(
         "MB_form.html",
         features=FEATURE_ORDER,
+        labels=LABELS,
         placeholders=PLACEHOLDERS,
         descriptions=DESCRIPTIONS,
         error=None
@@ -91,6 +108,7 @@ def mb_predict():
                 return render_template(
                     "MB_form.html",
                     features=FEATURE_ORDER,
+                    labels=LABELS,
                     placeholders=PLACEHOLDERS,
                     descriptions=DESCRIPTIONS,
                     error=f"Missing value for: {feat}"
@@ -101,6 +119,7 @@ def mb_predict():
                 return render_template(
                     "MB_form.html",
                     features=FEATURE_ORDER,
+                    labels=LABELS,
                     placeholders=PLACEHOLDERS,
                     descriptions=DESCRIPTIONS,
                     error=f"Invalid numeric value for: {feat}"
@@ -113,6 +132,7 @@ def mb_predict():
         return render_template(
             "MB_form.html",
             features=FEATURE_ORDER,
+            labels=LABELS,
             placeholders=PLACEHOLDERS,
             descriptions=DESCRIPTIONS,
             error="Please enter valid numeric values for all fields."
@@ -125,11 +145,95 @@ def mb_predict():
 
     predicted_label = "Malignant" if proba_malignant >= 0.5 else "Benign"
 
+    # Generate highlights (optional visual aids)
+    z = (x[0] - scaler.mean_) / scaler.scale_  # z-scores for the features
+    abs_idx = np.argsort(np.abs(z))[::-1][:3]  # top 3 most unusual
+
+    highlights = []
+    for i in abs_idx:
+        feat = FEATURE_ORDER[i]
+        highlights.append({
+            "label": LABELS.get(feat, feat),
+            "value": inputs[feat],
+            "z": float(np.round(z[i], 2))
+        })
+
     return render_template(
         "MB_result.html",
         predicted_label=predicted_label,
         proba_malignant=proba_malignant,
-        inputs=inputs
+        inputs=inputs,
+        highlights=highlights
+    )
+
+
+@app.post("/mb-report.pdf")
+def mb_report_pdf():
+    # Read prediction data from the hidden fields posted by MB_result.html
+    predicted_label = request.form.get("predicted_label", "Unknown")
+    proba_raw = request.form.get("proba_malignant", "0")
+    try:
+        proba_malignant = float(proba_raw)
+    except ValueError:
+        proba_malignant = 0.0
+
+    # Reconstruct inputs
+    inputs = {}
+    for feat in FEATURE_ORDER:
+        raw = request.form.get(f"in_{feat}", "")
+        try:
+            inputs[feat] = float(raw)
+        except ValueError:
+            inputs[feat] = raw  # fallback (shouldn't happen)
+
+    # Generate PDF in-memory
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    width, height = A4
+
+    y = height - 60
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, y, "Objective 1 — Tumor Classification Report")
+    y -= 25
+
+    c.setFont("Helvetica", 11)
+    c.drawString(50, y, "This report is generated for educational purposes only.")
+    y -= 16
+    c.drawString(50, y, "It must not be interpreted as medical diagnosis.")
+    y -= 30
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, f"Predicted result: {predicted_label}")
+    y -= 18
+    c.setFont("Helvetica", 12)
+    c.drawString(50, y, f"Estimated probability (malignant): {proba_malignant*100:.2f}%")
+    y -= 30
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, "Submitted measurements:")
+    y -= 18
+
+    c.setFont("Helvetica", 10)
+    for feat in FEATURE_ORDER:
+        label = LABELS.get(feat, feat)
+        val = inputs.get(feat, "")
+        line = f"- {label}: {val}"
+        c.drawString(55, y, line)
+        y -= 14
+        if y < 70:
+            c.showPage()
+            y = height - 60
+            c.setFont("Helvetica", 10)
+
+    c.showPage()
+    c.save()
+
+    buf.seek(0)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name="MB_result_report.pdf",
+        mimetype="application/pdf"
     )
 
 
