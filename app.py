@@ -2,16 +2,19 @@ import os
 import json
 import pickle
 import numpy as np
-from flask import Flask, render_template, request
+import cv2
+from flask import Flask, render_template, request, redirect, url_for
+from werkzeug.utils import secure_filename
 from io import BytesIO
-from flask import send_file
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
+from skimage.feature import local_binary_pattern
+import joblib
 
 app = Flask(__name__)
 
 # -------------------------
-# Load assets
+# Load assets for objective 1 (feature-based prediction)
 # -------------------------
 MODEL_PATH = os.path.join("models", "mlp_mean10.pkl")
 SCALER_PATH = os.path.join("models", "scaler_mean10.pkl")
@@ -32,6 +35,20 @@ with open(FEATURE_ORDER_PATH, "r") as f:
 
 if not FEATURE_ORDER or not isinstance(FEATURE_ORDER, list):
     raise ValueError("Invalid mean10_feature_order.json. Expected { 'feature_order': [..] }")
+
+# -------------------------
+# Model paths for image classification (objective 2)
+# -------------------------
+IMAGE_MODEL_PATH = "risk_model.pkl"
+IMAGE_SCALER_PATH = "scaler.pkl"
+
+image_model = joblib.load(IMAGE_MODEL_PATH)
+image_scaler = joblib.load(IMAGE_SCALER_PATH)
+
+UPLOAD_FOLDER = 'static/uploads/'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB max file size
 
 # -------------------------
 # UI helpers (placeholders + short descriptions)
@@ -76,7 +93,7 @@ LABELS = {
 }
 
 # -------------------------
-# Routes
+# Routes for Objective 1 (Tumor Classification)
 # -------------------------
 @app.get("/")
 def index():
@@ -100,7 +117,7 @@ def mb_predict():
     inputs = {}
     values = []
 
-    # Validate inputs
+    # Validate inputs for feature-based form
     try:
         for feat in FEATURE_ORDER:
             raw = request.form.get(feat, "").strip()
@@ -138,7 +155,7 @@ def mb_predict():
             error="Please enter valid numeric values for all fields."
         )
 
-    # Predict
+    # Predict based on the input features
     x = np.array([values], dtype=float)
     x_scaled = scaler.transform(x)
     proba_malignant = float(model.predict_proba(x_scaled)[0, 1])
@@ -235,6 +252,145 @@ def mb_report_pdf():
         download_name="MB_result_report.pdf",
         mimetype="application/pdf"
     )
+
+
+# -------------------------
+# Routes for Objective 2 (Image Classification)
+# -------------------------
+@app.post("/image-predict")
+def image_predict():
+    if 'image' not in request.files:
+        return redirect(request.url)
+
+    file = request.files['image']
+
+    if file and allowed_file(file.filename):
+        # Secure the filename and save it
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+
+        # Extract features and scale the data
+        feats = extract_features(filepath)
+        feats = image_scaler.transform([feats])
+
+        # Get prediction probability (ensure it's only calculated once)
+        prob = image_model.predict_proba(feats)[0, 1]
+        prediction = "Cancer suspecté" if prob > 0.5 else "Faible risque"
+
+        # Debugging: print the score value here
+        print(f"Prediction: {prediction}, Score: {prob}")
+
+        # Correction: Pass the raw probability as a string ('prob') to the URL parameter 'score'.
+        # This will be safely converted to a float and formatted in the template.
+        return redirect(url_for('show_result', score=str(prob), result=prediction))
+
+    return render_template('MB_form.html', error="No image found in the form.")
+
+
+@app.get('/result')
+def show_result():
+    score = request.args.get('score')  # score is received as a string (e.g., '0.0650...')
+    result = request.args.get('result')
+    # The score is now passed to the template. The formatting fix is below in the HTML.
+    cleanup_uploaded_files()
+    return render_template('result.html', score=score, result=result)
+
+
+# Check file extension
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def extract_features(image_path):
+    img = cv2.imread(image_path)
+    if img is None:
+        return None
+
+    # --- Colors ---
+    mean_B, mean_G, mean_R = np.mean(img[:,:,0]), np.mean(img[:,:,1]), np.mean(img[:,:,2])
+    std_B, std_G, std_R = np.std(img[:,:,0]), np.std(img[:,:,1]), np.std(img[:,:,2])
+
+    # --- LBP ---
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    lbp = local_binary_pattern(gray, 8 * 1, 1, method="uniform")
+    hist, _ = np.histogram(lbp.ravel(),
+                           bins=np.arange(0, 8 * 1 + 3),
+                           range=(0, 8 * 1 + 2))
+    hist = hist.astype("float")
+    hist /= hist.sum() + 1e-6
+
+    # --- Edge Density ---
+    edges = cv2.Canny(gray, 100, 200)
+    edge_density = np.sum(edges > 0) / edges.size
+
+    return [mean_B, mean_G, mean_R,
+            std_B, std_G, std_R,
+            *hist,
+            edge_density]
+
+def cleanup_uploaded_files():
+    upload_folder = 'static/uploads'
+    
+    # Get all files in the upload folder
+    files_in_directory = os.listdir(upload_folder)
+    
+    # You can implement conditions to delete files, e.g., delete after a certain time, or after they have been processed
+    for file_name in files_in_directory:
+        file_path = os.path.join(upload_folder, file_name)
+        
+        # Here we just delete everything; you can change this condition based on your needs
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+            print(f"Deleted {file_name}")
+
+
+
+@app.post("/generate-pdf")
+def generate_pdf():
+    predicted_label = request.form.get('predicted_label', 'Unknown')
+    proba_malignant = request.form.get('proba_malignant', '0')
+
+    inputs = {}
+    for feat in FEATURE_ORDER:
+        raw = request.form.get(f'in_{feat}', '')
+        try:
+            inputs[feat] = float(raw)
+        except ValueError:
+            inputs[feat] = raw  # fallback (shouldn't happen)
+
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    width, height = A4
+    y = height - 60
+
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, y, "Objective 1 — Tumor Classification Report")
+    y -= 25
+
+    c.setFont("Helvetica", 11)
+    c.drawString(50, y, f"Predicted result: {predicted_label}")
+    y -= 18
+    c.drawString(50, y, f"Estimated probability (malignant): {proba_malignant}")
+    y -= 30
+
+    c.setFont("Helvetica", 10)
+    for feat in FEATURE_ORDER:
+        label = LABELS.get(feat, feat)
+        val = inputs.get(feat, "")
+        line = f"- {label}: {val}"
+        c.drawString(55, y, line)
+        y -= 14
+        if y < 70:
+            c.showPage()
+            y = height - 60
+            c.setFont("Helvetica", 10)
+
+    c.showPage()
+    c.save()
+
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name="tumor_report.pdf", mimetype="application/pdf")
 
 
 if __name__ == "__main__":
