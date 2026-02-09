@@ -4,8 +4,13 @@ This is how to create a Python virtual environment, activate it, and install the
 
 
 ---
+## 1. Clone the repo:
+   ```bash
+   git clone https://github.com/yess1ne/Breast_cancer_themed_ML_project.git
+   cd Breadt_cancer_themed_ML_project
+   ```
 
-## 1. Create a Virtual Environment
+## 2. Create a Virtual Environment
 
 ```bash
 python -m venv venv
@@ -13,7 +18,7 @@ python -m venv venv
 
 ---
 
-## 2. Activate the Virtual Environment
+## 3. Activate the Virtual Environment
 
 **Windows (PowerShell):**
 ```bash
@@ -32,7 +37,7 @@ source venv/bin/activate
 
 ---
 
-## 3. Install Project Dependencies
+## 4. Install Project Dependencies
 
 ```bash
 pip install -r requirements.txt
@@ -40,7 +45,7 @@ pip install -r requirements.txt
 
 ---
 
-## 4. Deactivate the Virtual Environment
+## 5. Deactivate the Virtual Environment
 
 ```bash
 deactivate
@@ -48,7 +53,7 @@ deactivate
 
 ---
 
-## 5. Optional: Upgrade pip
+## 6. Optional: Upgrade pip
 
 ```bash
 pip install --upgrade pip
